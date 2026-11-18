@@ -58,14 +58,14 @@ dialog .bar{display:flex;justify-content:space-between;align-items:center;paddin
     </div>
 
     <div id="setup" class="card" hidden>
-      <p style="margin:0 0 12px"><b>Prize pool not set up yet.</b> This creates 75 shuffled cards: 30 × 5% OFF, 5 × 10% OFF, 10 × Emma Coconut Milk Powder, 30 × Better luck next time.</p>
-      <button id="seed">Set up the 75 cards</button>
+      <p style="margin:0 0 12px"><b>Links not set up yet.</b> This sets the limits for each link: 5% OFF = 30, 10% OFF = 5, Emma Coconut Milk Powder = 10, Better luck next time = 30.</p>
+      <button id="seed">Set up the 4 links</button>
     </div>
 
     <div id="game" class="card row" hidden>
       <span>Game status: <span id="status" class="pill"></span></span>
       <span class="muted" id="played"></span>
-      <button id="toggle" class="ghost small"></button>
+      <button id="toggle" class="ghost small">Pause all links</button>
     </div>
 
     <div class="stats" id="stats"></div>
@@ -82,7 +82,7 @@ dialog .bar{display:flex;justify-content:space-between;align-items:center;paddin
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, collection, getDocs, getDoc, doc, writeBatch, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, collection, getDocs, getDoc, doc, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 const app = initializeApp({apiKey:"AIzaSyDwQig1AiRn8371VvvYQuuYMzYaL2_u43Y",authDomain:"equics-fb-scratch.firebaseapp.com",projectId:"equics-fb-scratch",storageBucket:"equics-fb-scratch.firebasestorage.app",messagingSenderId:"90462183189",appId:"1:90462183189:web:1f07f3eb9589a289cd131c"});
 const auth = getAuth(app), db = getFirestore(app);
 const $ = id => document.getElementById(id);
@@ -90,9 +90,8 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const when = d => d.createdAt && d.createdAt.toDate ? d.createdAt.toDate() : null;
 const fmt = d => { const t = when(d); return t ? t.toLocaleString("en-GB", {dateStyle:"medium", timeStyle:"short"}) : ""; };
 const mob = p => { p = String(p || ""); return p.startsWith("960") ? "+960 " + p.slice(3) : p; };
-const ORDER = ["5% OFF","10% OFF","Emma Coconut Milk Powder","Better luck next time"];
-const PLAN = {"5% OFF":30,"10% OFF":5,"Emma Coconut Milk Powder":10,"Better luck next time":30};
-let rows = [], meta = null;
+const LINKS = [["p5","5% OFF",30],["p10","10% OFF",5],["emma","Emma Coconut Milk Powder",10],["luck","Better luck next time",30]];
+let rows = [], metas = {};
 
 $("login").onclick = () => { $("err").textContent = ""; signInWithPopup(auth, new GoogleAuthProvider()).catch(e => $("err").textContent = "Sign-in failed: " + e.message); };
 $("logout").onclick = () => signOut(auth);
@@ -107,45 +106,43 @@ onAuthStateChanged(auth, u => {
 $("seed").onclick = async () => {
   $("seed").disabled = true; $("err").textContent = "";
   try {
-    const cards = []; for (const k of ORDER) for (let i = 0; i < PLAN[k]; i++) cards.push(k);
-    const rnd = new Uint32Array(cards.length); crypto.getRandomValues(rnd);
-    for (let i = cards.length - 1; i > 0; i--) { const j = rnd[i] % (i + 1); [cards[i], cards[j]] = [cards[j], cards[i]]; }
     const b = writeBatch(db);
-    cards.forEach((p, i) => b.set(doc(db, "pool", String(i)), {prize: p, claimedBy: null}));
-    b.set(doc(db, "meta", "state"), {next: 0, total: cards.length, open: true});
-    await b.commit();
-    load();
+    LINKS.forEach(([k,label,total]) => b.set(doc(db, "meta", k), {label, next: 0, total, open: true}));
+    await b.commit(); load();
   } catch (e) { $("err").textContent = "Setup failed: " + e.message; $("seed").disabled = false; }
 };
 $("toggle").onclick = async () => {
   $("toggle").disabled = true;
-  try { await updateDoc(doc(db, "meta", "state"), {open: !meta.open}); await load(); }
-  catch (e) { $("err").textContent = "Could not change status: " + e.message; }
+  try {
+    const anyOpen = LINKS.some(([k]) => metas[k] && metas[k].open);
+    const b = writeBatch(db); LINKS.forEach(([k]) => { if (metas[k]) b.update(doc(db, "meta", k), {open: !anyOpen}); });
+    await b.commit(); await load();
+  } catch (e) { $("err").textContent = "Could not change status: " + e.message; }
   $("toggle").disabled = false;
 };
 
 async function load(){
   $("err").textContent = "";
   try {
-    const ms = await getDoc(doc(db, "meta", "state")); meta = ms.exists() ? ms.data() : null;
-    $("setup").hidden = !!meta; $("game").hidden = !meta;
-    if (meta) {
-      const live = meta.open && meta.next < meta.total;
-      $("status").textContent = live ? "LIVE" : (meta.next >= meta.total ? "ENDED (all 75 played)" : "PAUSED");
-      $("status").className = "pill " + (live ? "on" : "off");
-      $("played").textContent = meta.next + " of " + meta.total + " cards played";
-      $("toggle").textContent = meta.open ? "Pause game" : "Resume game";
-      $("toggle").hidden = meta.next >= meta.total;
+    const ms = await getDocs(collection(db, "meta")); metas = {}; ms.docs.forEach(d => metas[d.id] = d.data());
+    const ready = LINKS.every(([k]) => metas[k]);
+    $("setup").hidden = ready; $("game").hidden = !ready;
+    if (ready) {
+      const anyOpen = LINKS.some(([k]) => metas[k].open);
+      const played = LINKS.reduce((n,[k]) => n + metas[k].next, 0), total = LINKS.reduce((n,[k]) => n + metas[k].total, 0);
+      const allDone = played >= total;
+      $("status").textContent = allDone ? "ENDED (all played)" : (anyOpen ? "LIVE" : "PAUSED");
+      $("status").className = "pill " + (anyOpen && !allDone ? "on" : "off");
+      $("played").textContent = played + " of " + total + " cards played";
+      $("toggle").textContent = anyOpen ? "Pause all links" : "Resume all links";
+      $("toggle").hidden = allDone;
     }
-    const [es, ps] = await Promise.all([getDocs(collection(db, "entries")), getDocs(collection(db, "pool"))]);
-    const pool = {}; ps.docs.forEach(d => pool[d.id] = d.data());
-    rows = es.docs.map(d => ({uid: d.id, ...d.data(), prize: (pool[String(d.data().slot)] || {}).prize || ""}))
-      .sort((a,b) => (when(a)||0) - (when(b)||0));
+    const es = await getDocs(collection(db, "entries"));
+    rows = es.docs.map(d => ({uid: d.id, ...d.data()})).sort((a,b) => (when(a)||0) - (when(b)||0));
     $("rows").innerHTML = rows.map((d,i) => `<tr><td class="num">${i+1}</td><td class="num">${esc(fmt(d))}</td><td>${esc(d.name)}</td><td class="num">${esc(mob(d.phone))}</td><td>${esc(d.fbName)}</td><td class="num">${esc(d.fbId)}</td><td>${esc(d.prize)}</td><td><button class="ghost small" data-uid="${esc(d.uid)}" data-n="${esc(d.name)}">View</button></td></tr>`).join("")
       || '<tr><td colspan="8" class="muted">No entries yet.</td></tr>';
-    const count = {}; rows.forEach(d => count[d.prize] = (count[d.prize]||0) + 1);
     $("stats").innerHTML = `<div class="stat"><b>${rows.length}</b><span>Total players</span></div>` +
-      ORDER.map(k => `<div class="stat"><b>${count[k]||0} / ${PLAN[k]}</b><span>${esc(k)}</span></div>`).join("");
+      LINKS.map(([k,label,total]) => `<div class="stat"><b>${metas[k] ? metas[k].next : 0} / ${metas[k] ? metas[k].total : total}</b><span>${esc(label)}</span></div>`).join("");
   } catch (e) {
     $("in").hidden = true; $("out").hidden = false;
     $("err").textContent = e.code === "permission-denied" ? "This account is not allowed. Use janithaoffice8@gmail.com." : "Could not load: " + e.message;
