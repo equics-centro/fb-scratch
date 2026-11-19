@@ -21,22 +21,25 @@ const INFO = {
 };
 let meta = null, user = null, billData = "", playerName = "", PRIZE_LABEL = "";
 
-const fbReady = new Promise(res => {
-  window.fbAsyncInit = () => { FB.init({appId: FB_APP_ID, cookie: true, xfbml: false, version: "v19.0"}); res(); };
-  const s = document.createElement("script"); s.async = true; s.crossOrigin = "anonymous";
-  s.src = "https://connect.facebook.net/en_US/sdk.js"; s.onerror = () => res("fail"); document.head.appendChild(s);
-});
-$("fbBtn").onclick = async () => {
-  $("loginErr").textContent = "";
-  const r = await fbReady;
-  if (r === "fail" || !window.FB) { $("loginErr").textContent = "Facebook could not load. Check your internet and try again."; return; }
-  FB.login(async resp => {
-    if (!resp.authResponse) { $("loginErr").textContent = "Facebook login was cancelled. Tap the button to try again."; return; }
-    $("fbBtn").disabled = true;
-    try { await signInWithCredential(auth, FacebookAuthProvider.credential(resp.authResponse.accessToken)); }
-    catch (e) { console.error(e); $("loginErr").textContent = "Login failed. Please try again."; $("fbBtn").disabled = false; }
-  }, {scope: "public_profile"});
+const RETURN = location.origin + location.pathname;
+let loginMsg = "", pendingLogin = null;
+$("fbBtn").onclick = () => {
+  $("fbBtn").disabled = true;
+  const st = Math.random().toString(36).slice(2);
+  try { sessionStorage.setItem("fbst", st); } catch (e) {}
+  location.href = "https://www.facebook.com/v19.0/dialog/oauth?" + new URLSearchParams({client_id: FB_APP_ID, redirect_uri: RETURN, response_type: "token", scope: "public_profile", state: st});
 };
+(() => {
+  const h = new URLSearchParams(location.hash.slice(1)), q = new URLSearchParams(location.search);
+  if (h.get("access_token")) {
+    history.replaceState(null, "", RETURN);
+    pendingLogin = signInWithCredential(auth, FacebookAuthProvider.credential(h.get("access_token")))
+      .catch(e => { console.error(e); loginMsg = "Login failed. Please try again."; pendingLogin = null; show("sLogin"); $("loginErr").textContent = loginMsg; });
+  } else if (h.get("error") || q.get("error")) {
+    history.replaceState(null, "", RETURN);
+    loginMsg = "Facebook login was cancelled. Tap the button to try again.";
+  }
+})();
 
 async function loadMeta(){ const s = await getDoc(doc(db, "meta", KEY)); meta = s.exists() ? s.data() : null; }
 function leftBadge(){ if (meta) { const l = Math.max(0, meta.total - meta.next); $("left").textContent = l + " of " + meta.total + " cards left"; $("left").hidden = false; } }
@@ -44,6 +47,7 @@ function ended(){ return !meta || !meta.open || meta.next >= meta.total; }
 
 onAuthStateChanged(auth, async u => {
   show("sLoad");
+  if (!u && pendingLogin) { await pendingLogin; if (pendingLogin) return; }
   try { await loadMeta(); } catch (e) { console.error(e); }
   leftBadge();
   const fb = u && u.providerData.find(p => p.providerId === "facebook.com");
@@ -57,7 +61,7 @@ onAuthStateChanged(auth, async u => {
     return show("sForm");
   }
   if (ended()) return show("sEnded");
-  show("sLogin");
+  show("sLogin"); $("fbBtn").disabled = false; $("loginErr").textContent = loginMsg;
 });
 
 $("phone").addEventListener("input", e => { const v = e.target.value.replace(/[^0-9]/g,"").slice(0,7); if (v !== e.target.value) e.target.value = v; });
