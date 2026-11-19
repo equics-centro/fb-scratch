@@ -62,6 +62,11 @@ dialog .bar{display:flex;justify-content:space-between;align-items:center;paddin
       <button id="seed">Set up the 4 links</button>
     </div>
 
+    <div id="poolSetup" class="card" hidden>
+      <p style="margin:0 0 12px"><b>Random link not set up yet.</b> This shuffles 75 cards (30 × 5% OFF, 5 × 10% OFF, 10 × Emma Coconut Milk Powder, 30 × Better luck next time) and pauses the 4 single-prize links.</p>
+      <button id="seedPool">Set up the random link</button>
+    </div>
+
     <div id="game" class="card row" hidden>
       <span>Game status: <span id="status" class="pill"></span></span>
       <span class="muted" id="played"></span>
@@ -111,11 +116,24 @@ $("seed").onclick = async () => {
     await b.commit(); load();
   } catch (e) { $("err").textContent = "Setup failed: " + e.message; $("seed").disabled = false; }
 };
+$("seedPool").onclick = async () => {
+  $("seedPool").disabled = true; $("err").textContent = "";
+  try {
+    const cards = []; LINKS.forEach(([k,label,total]) => { for (let i = 0; i < total; i++) cards.push(label); });
+    const rnd = new Uint32Array(cards.length); crypto.getRandomValues(rnd);
+    for (let i = cards.length - 1; i > 0; i--) { const j = rnd[i] % (i + 1); [cards[i], cards[j]] = [cards[j], cards[i]]; }
+    const b = writeBatch(db);
+    cards.forEach((p, i) => b.set(doc(db, "pool", String(i)), {prize: p, claimedBy: null}));
+    b.set(doc(db, "meta", "pool"), {label: "random", next: 0, total: cards.length, open: true});
+    LINKS.forEach(([k]) => { if (metas[k]) b.update(doc(db, "meta", k), {open: false}); });
+    await b.commit(); load();
+  } catch (e) { $("err").textContent = "Setup failed: " + e.message; $("seedPool").disabled = false; }
+};
 $("toggle").onclick = async () => {
   $("toggle").disabled = true;
   try {
-    const anyOpen = LINKS.some(([k]) => metas[k] && metas[k].open);
-    const b = writeBatch(db); LINKS.forEach(([k]) => { if (metas[k]) b.update(doc(db, "meta", k), {open: !anyOpen}); });
+    const anyOpen = ["pool", ...LINKS.map(([k]) => k)].some(k => metas[k] && metas[k].open);
+    const b = writeBatch(db); ["pool", ...LINKS.map(([k]) => k)].forEach(k => { if (metas[k]) b.update(doc(db, "meta", k), {open: !anyOpen}); });
     await b.commit(); await load();
   } catch (e) { $("err").textContent = "Could not change status: " + e.message; }
   $("toggle").disabled = false;
@@ -126,23 +144,26 @@ async function load(){
   try {
     const ms = await getDocs(collection(db, "meta")); metas = {}; ms.docs.forEach(d => metas[d.id] = d.data());
     const ready = LINKS.every(([k]) => metas[k]);
-    $("setup").hidden = ready; $("game").hidden = !ready;
+    $("setup").hidden = ready; $("poolSetup").hidden = !ready || !!metas.pool; $("game").hidden = !ready;
     if (ready) {
-      const anyOpen = LINKS.some(([k]) => metas[k].open);
-      const played = LINKS.reduce((n,[k]) => n + metas[k].next, 0), total = LINKS.reduce((n,[k]) => n + metas[k].total, 0);
+      const keys = metas.pool ? ["pool"] : LINKS.map(([k]) => k);
+      const anyOpen = keys.some(k => metas[k].open);
+      const played = keys.reduce((n,k) => n + metas[k].next, 0), total = keys.reduce((n,k) => n + metas[k].total, 0);
       const allDone = played >= total;
       $("status").textContent = allDone ? "ENDED (all played)" : (anyOpen ? "LIVE" : "PAUSED");
       $("status").className = "pill " + (anyOpen && !allDone ? "on" : "off");
-      $("played").textContent = played + " of " + total + " cards played";
+      $("played").textContent = (metas.pool ? "Random link: " : "") + played + " of " + total + " cards played";
       $("toggle").textContent = anyOpen ? "Pause all links" : "Resume all links";
       $("toggle").hidden = allDone;
     }
     const es = await getDocs(collection(db, "entries"));
-    rows = es.docs.map(d => ({uid: d.id, ...d.data()})).sort((a,b) => (when(a)||0) - (when(b)||0));
+    let poolMap = {};
+    if (metas.pool) { const ps = await getDocs(collection(db, "pool")); ps.docs.forEach(d => poolMap[d.id] = d.data().prize); }
+    rows = es.docs.map(d => { const x = {uid: d.id, ...d.data()}; if (x.key === "pool") x.prize = poolMap[String(x.seq)] || ""; return x; }).sort((a,b) => (when(a)||0) - (when(b)||0));
     $("rows").innerHTML = rows.map((d,i) => `<tr><td class="num">${i+1}</td><td class="num">${esc(fmt(d))}</td><td>${esc(d.name)}</td><td class="num">${esc(mob(d.phone))}</td><td>${esc(d.fbName)}</td><td class="num">${esc(d.fbId)}</td><td>${esc(d.prize)}</td><td><button class="ghost small" data-uid="${esc(d.uid)}" data-n="${esc(d.name)}">View</button></td></tr>`).join("")
       || '<tr><td colspan="8" class="muted">No entries yet.</td></tr>';
     $("stats").innerHTML = `<div class="stat"><b>${rows.length}</b><span>Total players</span></div>` +
-      LINKS.map(([k,label,total]) => `<div class="stat"><b>${metas[k] ? metas[k].next : 0} / ${metas[k] ? metas[k].total : total}</b><span>${esc(label)}</span></div>`).join("");
+      LINKS.map(([k,label,total]) => `<div class="stat"><b>${rows.filter(r => r.prize === label).length} / ${total}</b><span>${esc(label)}</span></div>`).join("");
   } catch (e) {
     $("in").hidden = true; $("out").hidden = false;
     $("err").textContent = e.code === "permission-denied" ? "This account is not allowed. Use janithaoffice8@gmail.com." : "Could not load: " + e.message;
