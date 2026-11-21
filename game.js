@@ -42,7 +42,8 @@ $("fbFill").onclick = () => {
 const fbOf = u => u && u.providerData.find(p => p.providerId === "facebook.com");
 function showFb(){
   const fb = fbOf(user);
-  $("fbBox").hidden = !fb; $("fbFill").hidden = !!fb; $("fbNote").hidden = !!fb;
+  const inFbApp = /FBAN|FBAV|FB_IAB|FBIOS|FB4A/i.test(navigator.userAgent || "");
+  $("fbBox").hidden = !fb; $("fbFill").hidden = !!fb || !inFbApp; $("fbNote").hidden = !!fb || !inFbApp;
   if (fb) { $("fbId").textContent = fb.uid; if (!$("name").value && fb.displayName) $("name").value = fb.displayName.slice(0, 60); }
   $("err").textContent = fbMsg; fbMsg = "";
 }
